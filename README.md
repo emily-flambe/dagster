@@ -1,65 +1,201 @@
 # Dagster PC Setup
 
-Multi-project Dagster instance hosted on home PC, accessible via Tailscale.
+Multi-project Dagster instance hosted on home PC (Windows + WSL2), accessible via Tailscale.
 
 ## Architecture
 
 ```
-One Dagster instance → Multiple code locations (one per project)
-                    → Shared postgres, daemon, UI
-                    → Each project repo contains its own Dagster definitions
+WSL2 Ubuntu
+├── PostgreSQL (native)
+├── dagster-webserver (systemd service)
+├── dagster-daemon (systemd service)
+└── Code locations mounted from Windows filesystem
+
+Windows
+├── Port proxy (forwards 0.0.0.0:3000 → WSL2:3000)
+└── Firewall rule (allows port 3000)
+
+Tailscale
+└── Access UI at http://pceus:3000
 ```
 
-## Directory structure
+## Directory Structure
 
 ```
-~/
-├── dagster/                    # This repo - Dagster infrastructure
-│   ├── docker-compose.yml
-│   ├── config/
-│   │   ├── dagster.yaml
-│   │   └── workspace.yaml
-│   └── README.md
-│
+Windows:
+C:\Users\emily\Documents\GitHub\
+├── dagster/                    # This repo - infrastructure docs
 ├── project-a/                  # Separate repo per project
-│   ├── dagster_definitions/
-│   │   ├── __init__.py
-│   │   └── definitions.py
-│   └── ...
-│
+│   └── dagster_definitions/
+│       ├── __init__.py
+│       └── definitions.py
 └── project-b/
-    ├── dagster_definitions/
-    │   ├── __init__.py
-    │   └── definitions.py
-    └── ...
+    └── dagster_definitions/
+
+WSL2 (/opt/dagster/):
+├── venv/                       # Python virtual environment
+└── dagster_home/
+    ├── dagster.yaml            # Instance config (postgres connection)
+    └── workspace.yaml          # Code locations
 ```
 
 ## Setup
 
-### 1. Install Docker
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-# Log out and back in
+### 1. Configure WSL2
+
+Create `C:\Users\emily\.wslconfig`:
+
+```ini
+[wsl2]
+memory=8GB
+swap=4GB
+processors=4
+vmIdleTimeout=-1
+
+[experimental]
+autoMemoryReclaim=disabled
+
+[general]
+instanceIdleTimeout=-1
 ```
 
-### 2. Start services
+**Important:** The timeout settings prevent WSL2 from auto-shutting down background services.
+
+Then restart WSL: `wsl --shutdown`
+
+### 2. Install PostgreSQL in WSL2
+
 ```bash
-cd ~/dagster
-docker compose up -d
+wsl -d Ubuntu
+sudo apt-get update && sudo apt-get install -y postgresql postgresql-contrib
+sudo service postgresql start
+sudo -u postgres psql -c "CREATE USER dagster WITH PASSWORD 'dagster';"
+sudo -u postgres psql -c "CREATE DATABASE dagster OWNER dagster;"
 ```
 
-### 3. Access UI
-From MacBook: `http://<pc-tailscale-hostname>:3000`
+### 3. Install Dagster in WSL2
 
-## Adding a new project
+```bash
+sudo mkdir -p /opt/dagster && sudo chown $(id -u):$(id -g) /opt/dagster
+python3 -m venv /opt/dagster/venv
+source /opt/dagster/venv/bin/activate
+pip install dagster dagster-webserver dagster-postgres
+mkdir -p /opt/dagster/dagster_home
+```
+
+### 4. Create Dagster Config
+
+Create `/opt/dagster/dagster_home/dagster.yaml`:
+
+```yaml
+storage:
+  postgres:
+    postgres_db:
+      username: dagster
+      password: dagster
+      hostname: localhost
+      db_name: dagster
+      port: 5432
+
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+```
+
+Create `/opt/dagster/dagster_home/workspace.yaml`:
+
+```yaml
+load_from:
+  - python_file:
+      relative_path: /mnt/c/Users/emily/Documents/GitHub/project-a/dagster_definitions/definitions.py
+      location_name: project_a
+```
+
+### 5. Create systemd Services
+
+Create `/etc/systemd/system/dagster-webserver.service`:
+
+```ini
+[Unit]
+Description=Dagster Webserver
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+Environment=DAGSTER_HOME=/opt/dagster/dagster_home
+ExecStart=/opt/dagster/venv/bin/dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/dagster_home/workspace.yaml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create `/etc/systemd/system/dagster-daemon.service`:
+
+```ini
+[Unit]
+Description=Dagster Daemon
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+Environment=DAGSTER_HOME=/opt/dagster/dagster_home
+ExecStart=/opt/dagster/venv/bin/dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable dagster-webserver dagster-daemon
+sudo systemctl start dagster-webserver dagster-daemon
+```
+
+### 6. Configure Windows Network Access
+
+WSL2 only forwards ports to Windows localhost by default. To access via Tailscale, run these in PowerShell (Admin):
+
+```powershell
+# Get WSL2 IP (changes on reboot)
+wsl -d Ubuntu hostname -I
+
+# Add port proxy (replace IP with actual WSL2 IP)
+netsh interface portproxy add v4tov4 listenport=3000 listenaddress=0.0.0.0 connectport=3000 connectaddress=<WSL2_IP>
+
+# Add firewall rule
+netsh advfirewall firewall add rule name="Dagster WSL2" dir=in action=allow protocol=tcp localport=3000
+```
+
+**Note:** WSL2 IP changes on reboot. You may need to update the port proxy after restarting.
+
+### 7. Access UI
+
+From any device on Tailscale: `http://pceus:3000`
+
+## Adding a New Project
 
 1. **Create Dagster definitions in the project:**
+
    ```bash
-   mkdir -p ~/new-project/dagster_definitions
-   cat > ~/new-project/dagster_definitions/__init__.py << 'EOF'
-   EOF
-   cat > ~/new-project/dagster_definitions/definitions.py << 'EOF'
+   mkdir -p ~/Documents/GitHub/new-project/dagster_definitions
+   touch ~/Documents/GitHub/new-project/dagster_definitions/__init__.py
+   ```
+
+   Create `definitions.py`:
+
+   ```python
    from dagster import asset, Definitions
 
    @asset
@@ -67,81 +203,62 @@ From MacBook: `http://<pc-tailscale-hostname>:3000`
        return "Hello!"
 
    defs = Definitions(assets=[my_asset])
-   EOF
    ```
 
-2. **Add mount to `docker-compose.yml`:**
-   ```yaml
-   volumes:
-     # ... existing mounts ...
-     - ~/new-project:/projects/new-project:ro
-   ```
-   (Add to both `dagster-webserver` and `dagster-daemon`)
+2. **Add to workspace.yaml** (`/opt/dagster/dagster_home/workspace.yaml`):
 
-3. **Add code location to `workspace.yaml`:**
    ```yaml
    - python_file:
-       relative_path: /projects/new-project/dagster_definitions/definitions.py
+       relative_path: /mnt/c/Users/emily/Documents/GitHub/new-project/dagster_definitions/definitions.py
        location_name: new_project
    ```
 
-4. **Restart Dagster:**
+3. **Restart services:**
+
    ```bash
-   cd ~/dagster
-   docker compose restart dagster-webserver dagster-daemon
+   wsl -d Ubuntu -e sudo systemctl restart dagster-webserver dagster-daemon
    ```
 
-## Dependency isolation (optional)
+## Starting Services After Reboot
 
-If projects need different Python packages, run each as a gRPC server.
-
-**In project repo, add `Dockerfile`:**
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install dagster dagster-postgres grpcio -r requirements.txt
-COPY dagster_definitions/ ./dagster_definitions/
-CMD ["dagster", "api", "grpc", "-h", "0.0.0.0", "-p", "4000", "-f", "dagster_definitions/definitions.py"]
+```bash
+wsl -d Ubuntu -e bash -c "sudo service postgresql start && sudo systemctl start dagster-webserver dagster-daemon"
 ```
 
-**Add to `docker-compose.yml`:**
-```yaml
-dagster-code-project-a:
-  build: ~/project-a
-  restart: unless-stopped
+You may also need to update the port proxy if WSL2 IP changed:
+
+```powershell
+# Remove old proxy
+netsh interface portproxy delete v4tov4 listenport=3000 listenaddress=0.0.0.0
+
+# Get new WSL2 IP and add proxy
+wsl -d Ubuntu hostname -I
+netsh interface portproxy add v4tov4 listenport=3000 listenaddress=0.0.0.0 connectport=3000 connectaddress=<NEW_IP>
 ```
-
-**Update `workspace.yaml`:**
-```yaml
-- grpc_server:
-    host: dagster-code-project-a
-    port: 4000
-    location_name: project_a
-```
-
-Only do this if you hit actual dependency conflicts.
-
-## Verification
-
-- [ ] `docker compose ps` shows 3 services healthy
-- [ ] UI accessible at `http://<tailscale-hostname>:3000`
-- [ ] Each project appears as separate code location in UI
-- [ ] Can materialize assets from each project
 
 ## Troubleshooting
 
 ```bash
+# Check service status
+wsl -d Ubuntu -e sudo systemctl status dagster-webserver dagster-daemon
+
 # View logs
-docker compose logs -f dagster-webserver
-docker compose logs -f dagster-daemon
+wsl -d Ubuntu -e sudo journalctl -u dagster-webserver -f
+wsl -d Ubuntu -e sudo journalctl -u dagster-daemon -f
 
-# Restart after config changes
-docker compose restart dagster-webserver dagster-daemon
+# Restart services
+wsl -d Ubuntu -e sudo systemctl restart dagster-webserver dagster-daemon
 
-# Full rebuild
-docker compose down && docker compose up -d
+# Check PostgreSQL
+wsl -d Ubuntu -e sudo service postgresql status
 
-# Check workspace is valid
-docker compose exec dagster-webserver dagster debug workspace
+# Check port proxy (Windows)
+netsh interface portproxy show all
+
+# Test connectivity
+curl http://localhost:3000/
 ```
+
+## Why Not Docker?
+
+We initially tried Docker in WSL2 but encountered constant container restarts due to WSL2's idle timeout and memory reclaim features interfering with the Docker daemon. Running Dagster natively in WSL2 with systemd is more stable.
