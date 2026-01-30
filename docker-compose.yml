@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   dagster-webserver:
     image: dagster/dagster-k8s:latest
@@ -10,8 +8,7 @@ services:
       - ./config/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
       - ./config/workspace.yaml:/opt/dagster/app/workspace.yaml
       # Mount project directories (add more as needed)
-      - ~/project-a:/projects/project-a:ro
-      - ~/project-b:/projects/project-b:ro
+      - ../project-a:/projects/project-a:ro
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
     depends_on:
@@ -21,12 +18,11 @@ services:
 
   dagster-daemon:
     image: dagster/dagster-k8s:latest
-    entrypoint: ["dagster-daemon", "run"]
+    entrypoint: ["dagster-daemon", "run", "-w", "/opt/dagster/app/workspace.yaml"]
     volumes:
       - ./config/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
       - ./config/workspace.yaml:/opt/dagster/app/workspace.yaml
-      - ~/project-a:/projects/project-a:ro
-      - ~/project-b:/projects/project-b:ro
+      - ../project-a:/projects/project-a:ro
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
     depends_on:
