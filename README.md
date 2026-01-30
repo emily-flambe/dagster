@@ -186,16 +186,18 @@ From any device on Tailscale: `http://pceus:3000`
 
 ## Adding a New Project
 
-1. **Create Dagster definitions in the project:**
+### Option A: Single-file (simple projects)
+
+Use `python_file` when all definitions fit in one file with no relative imports.
+
+1. **Create definitions.py:**
 
    ```bash
    mkdir -p ~/Documents/GitHub/new-project/dagster_definitions
-   touch ~/Documents/GitHub/new-project/dagster_definitions/__init__.py
    ```
 
-   Create `definitions.py`:
-
    ```python
+   # dagster_definitions/definitions.py
    from dagster import asset, Definitions
 
    @asset
@@ -205,7 +207,7 @@ From any device on Tailscale: `http://pceus:3000`
    defs = Definitions(assets=[my_asset])
    ```
 
-2. **Add to workspace.yaml** (`/opt/dagster/dagster_home/workspace.yaml`):
+2. **Add to workspace.yaml:**
 
    ```yaml
    - python_file:
@@ -213,11 +215,67 @@ From any device on Tailscale: `http://pceus:3000`
        location_name: new_project
    ```
 
-3. **Restart services:**
+### Option B: Multi-file (complex projects)
 
-   ```bash
-   wsl -d Ubuntu -e sudo systemctl restart dagster-webserver dagster-daemon
+Use `python_module` when splitting code across multiple files with relative imports.
+
+1. **Create module structure:**
+
    ```
+   dagster_definitions/
+   ├── __init__.py          # Empty or exports
+   ├── definitions.py       # Main definitions file
+   ├── jobs.py              # Job definitions
+   ├── schedules.py         # Schedule definitions
+   └── resources.py         # Resource definitions
+   ```
+
+   ```python
+   # dagster_definitions/definitions.py
+   from dagster import Definitions
+   from .jobs import my_job           # Relative imports work here
+   from .schedules import my_schedule
+
+   defs = Definitions(jobs=[my_job], schedules=[my_schedule])
+   ```
+
+2. **Add to workspace.yaml:**
+
+   ```yaml
+   - python_module:
+       module_name: dagster_definitions.definitions
+       working_directory: /mnt/c/Users/emily/Documents/GitHub/new-project
+       location_name: new_project
+   ```
+
+   The `working_directory` is required for Python to resolve the module.
+
+### Environment Variables
+
+If your project needs environment variables (API tokens, etc.), add them to **both** service files:
+
+```bash
+# Edit both service files
+wsl -d Ubuntu -e sudo nano /etc/systemd/system/dagster-webserver.service
+wsl -d Ubuntu -e sudo nano /etc/systemd/system/dagster-daemon.service
+
+# Add under [Service] in BOTH files:
+Environment=MY_TOKEN=xxx
+
+# Reload and restart
+wsl -d Ubuntu -e sudo systemctl daemon-reload
+wsl -d Ubuntu -e sudo systemctl restart dagster-webserver dagster-daemon
+```
+
+Both services load code locations and spawn subprocesses that need access to env vars.
+
+### Restart Services
+
+After any workspace.yaml changes:
+
+```bash
+wsl -d Ubuntu -e sudo systemctl restart dagster-webserver dagster-daemon
+```
 
 ## Starting Services After Reboot
 
