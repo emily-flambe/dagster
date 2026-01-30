@@ -258,7 +258,3 @@ netsh interface portproxy show all
 # Test connectivity
 curl http://localhost:3000/
 ```
-
-## Why Not Docker?
-
-We initially tried Docker in WSL2 but encountered constant container restarts due to WSL2's idle timeout and memory reclaim features interfering with the Docker daemon. Running Dagster natively in WSL2 with systemd is more stable.
