@@ -1,0 +1,9 @@
+load_from:
+  # Add one entry per project
+  - python_file:
+      relative_path: /projects/project-a/dagster_definitions/definitions.py
+      location_name: project_a
+
+  - python_file:
+      relative_path: /projects/project-b/dagster_definitions/definitions.py
+      location_name: project_b

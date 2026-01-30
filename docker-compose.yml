@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  dagster-webserver:
+    image: dagster/dagster-k8s:latest
+    entrypoint: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/app/workspace.yaml"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - ./config/workspace.yaml:/opt/dagster/app/workspace.yaml
+      # Mount project directories (add more as needed)
+      - ~/project-a:/projects/project-a:ro
+      - ~/project-b:/projects/project-b:ro
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    depends_on:
+      - dagster-daemon
+      - postgres
+    restart: unless-stopped
+
+  dagster-daemon:
+    image: dagster/dagster-k8s:latest
+    entrypoint: ["dagster-daemon", "run"]
+    volumes:
+      - ./config/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - ./config/workspace.yaml:/opt/dagster/app/workspace.yaml
+      - ~/project-a:/projects/project-a:ro
+      - ~/project-b:/projects/project-b:ro
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: dagster
+      POSTGRES_PASSWORD: dagster
+      POSTGRES_DB: dagster
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
